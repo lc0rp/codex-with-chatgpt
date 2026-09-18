@@ -257,6 +257,7 @@ describe("named hostname helpers", () => {
   });
 
   it("falls back to the workspace id when the name is not ASCII", () => {
+    // Keep this non-ASCII fixture to test Unicode workspace names.
     expect(hostnameSlug("回声", "abcdef123456")).toBe("c2c-ws-abcdef12");
   });
 
@@ -344,7 +345,7 @@ describe("tunnel preference state", () => {
     }).then((result) => {
       expect(result.fallback).toBe(true);
       expect(result.state.preference).toBe("quick");
-      expect(result.userMessage).toMatch(/临时地址/);
+      expect(result.userMessage).toMatch(/temporary address/);
     });
   });
 });
