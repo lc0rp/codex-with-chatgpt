@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { readRun } from "../session/runs.js";
 import { ensureDir, getStateDir } from "../config/paths.js";
 
 /**
@@ -9,6 +10,7 @@ import { ensureDir, getStateDir } from "../config/paths.js";
  * `execution_summary` and `test_status` MCP tools.
  */
 export const executionRecordSchema = z.object({
+  runId: z.string().optional(),
   taskId: z.string(),
   iteration: z.number().int().nonnegative(),
   changedFiles: z.union([z.array(z.string()), z.number().int().nonnegative()]),
@@ -22,18 +24,22 @@ export const executionRecordSchema = z.object({
 
 export type ExecutionRecord = z.infer<typeof executionRecordSchema>;
 
-function recordsFile(workspaceId: string): string {
+function recordsFile(workspaceId: string, runId?: string): string {
+  if (runId) {
+    readRun(runId, workspaceId);
+    return path.join(ensureDir(path.join(getStateDir(), "executions", workspaceId)), `${runId}.jsonl`);
+  }
   const dir = ensureDir(path.join(getStateDir(), "executions"));
   return path.join(dir, `${workspaceId}.jsonl`);
 }
 
 export function appendExecutionRecord(workspaceId: string, record: ExecutionRecord): void {
-  const file = recordsFile(workspaceId);
+  const file = recordsFile(workspaceId, record.runId);
   fs.appendFileSync(file, JSON.stringify(executionRecordSchema.parse(record)) + "\n", { mode: 0o600 });
 }
 
-export function readExecutionRecords(workspaceId: string, limit = 10): ExecutionRecord[] {
-  const file = recordsFile(workspaceId);
+export function readExecutionRecords(workspaceId: string, limit = 10, runId?: string): ExecutionRecord[] {
+  const file = recordsFile(workspaceId, runId);
   if (!fs.existsSync(file)) return [];
   const lines = fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
   const records: ExecutionRecord[] = [];
@@ -41,7 +47,7 @@ export function readExecutionRecords(workspaceId: string, limit = 10): Execution
   for (let index = lines.length - 1; index >= 0 && records.length < requestedLimit; index--) {
     try {
       const record = executionRecordSchema.safeParse(JSON.parse(lines[index]));
-      if (record.success) records.push(record.data);
+      if (record.success && (!runId || record.data.runId === runId)) records.push(record.data);
     } catch {
       // skip corrupt lines
     }
@@ -49,7 +55,7 @@ export function readExecutionRecords(workspaceId: string, limit = 10): Execution
   return records.reverse();
 }
 
-export function latestExecutionRecord(workspaceId: string): ExecutionRecord | null {
-  const records = readExecutionRecords(workspaceId, 1);
+export function latestExecutionRecord(workspaceId: string, runId?: string): ExecutionRecord | null {
+  const records = readExecutionRecords(workspaceId, 1, runId);
   return records[records.length - 1] ?? null;
 }

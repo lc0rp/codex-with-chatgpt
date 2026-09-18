@@ -1,3 +1,8 @@
+> Implementation: opt-in shared mode is available. See
+> [shared-workspace usage and migration](shared-workspaces.md) for the implemented
+> CLI, routing contract, state paths, tests, and live-smoke-test limitations.
+> The proposal below is retained as the original design context.
+
 Original question:
 
 How does this project store the config? Right now it fixes the domain MCP to one local folder/project, and one ChatGPT web project. This means I have to create multiple instances of the plug in. One for each project that I want to use codex-with-chatgpt. I'd like to update it so that one plugin can be used for any local folder - chatgpt web project pairs, with the prompts & instructions specifying the local path and the remote project, rather than that being a plugin/mcp restriction.

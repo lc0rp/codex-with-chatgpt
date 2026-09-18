@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDir, getStateDir } from "../config/paths.js";
 import { findBridgeObservation, findLiveBridge, probeBridge, readRuntimeState, type RuntimeState } from "../bridge/runtime.js";
-import { Workspace } from "../workspace/manager.js";
+import { connectionForWorkspace, type ConnectionIdentity } from "../config/connection.js";
+import { withBridgeLock } from "./lock.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,9 +31,22 @@ export interface EnsureBridgeResult {
  * otherwise spawns a detached daemon and waits for it to become healthy.
  */
 export async function ensureBridge(workspaceRoot: string, opts: { port?: number } = {}): Promise<EnsureBridgeResult> {
-  const workspace = new Workspace(workspaceRoot);
+  const workspace = connectionForWorkspace(workspaceRoot);
+  return withBridgeLock(workspace.id, () => {
+    const current = connectionForWorkspace(workspaceRoot);
+    if (current.id !== workspace.id) throw new Error("Connection mode changed during startup; retry the command.");
+    return startOrReuse(current, opts);
+  });
+}
+
+async function startOrReuse(workspace: ConnectionIdentity, opts: { port?: number }): Promise<EnsureBridgeResult> {
   const observation = await findBridgeObservation(workspace.id);
-  if (observation.state === "healthy") return { runtime: observation.runtime, spawned: false };
+  if (observation.state === "healthy") {
+    if (JSON.stringify(workspace.allowedRoots) !== JSON.stringify(observation.runtime.allowedRoots)) {
+      throw new Error("The running bridge has a different root policy. Stop it before changing shared access.");
+    }
+    return { runtime: observation.runtime, spawned: false };
+  }
   if (observation.state === "unknown") {
     throw new Error(
       `Bridge state is uncertain (${observation.reason}); refusing to start another bridge.`
@@ -52,7 +66,7 @@ export async function ensureBridge(workspaceRoot: string, opts: { port?: number 
   const { cmd, args } = cliEntry();
   const child = spawn(
     cmd,
-    [...args, "serve", "--workspace", workspace.root, ...(opts.port ? ["--port", String(opts.port)] : [])],
+    [...args, "serve", "--workspace", workspace.root, "--connection-mode", workspace.allowedRoots ? "shared" : "single", ...(opts.port ? ["--port", String(opts.port)] : [])],
     {
       detached: true,
       stdio: ["ignore", out, out],
@@ -100,7 +114,7 @@ export async function adminFetch<T = unknown>(
 }
 
 export async function stopBridge(workspaceRoot: string): Promise<boolean> {
-  const workspace = new Workspace(workspaceRoot);
+  const workspace = connectionForWorkspace(workspaceRoot);
   const runtime = readRuntimeState(workspace.id);
   if (!runtime) return false;
   const healthy = await probeBridge(runtime.port);

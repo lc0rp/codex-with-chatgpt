@@ -2,6 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { Workspace, WorkspaceError } from "../workspace/manager.js";
+import { WorkspaceRouter } from "../workspace/router.js";
+import { readRun, runIdSchema } from "../session/runs.js";
 import { searchWorkspace } from "../workspace/search.js";
 import { gitDiff, gitInfo, gitStatus, type DiffMode } from "../workspace/git.js";
 import { executionRecordSchema, latestExecutionRecord, readExecutionRecords } from "../execution/records.js";
@@ -181,17 +183,61 @@ const executionOutputOutputSchema = {
 
 export interface McpContext {
   workspace: Workspace;
+  router?: WorkspaceRouter;
   logger: Logger;
 }
 
 export function createMcpServer(ctx: McpContext): McpServer {
-  const { workspace } = ctx;
+  const router = ctx.router ?? new WorkspaceRouter(ctx.workspace);
   const server = new McpServer(
     { name: PRODUCT_NAME, version: VERSION },
     { capabilities: { tools: {} }, instructions: UNTRUSTED_NOTE }
   );
 
-  server.registerTool(
+  const identitySchema = {
+    workspaceId: z.string(),
+    workspacePath: z.string(),
+    workspaceName: z.string(),
+    runId: z.string().optional(),
+  };
+
+  function register<I extends z.ZodRawShape, O extends z.ZodRawShape>(
+    name: string,
+    config: { title: string; description: string; inputSchema: I; outputSchema: O; annotations: { readOnlyHint: boolean } },
+    callback: (args: z.output<z.ZodObject<I>>, workspace: Workspace, runId?: string) => Promise<ToolResult>
+  ): void {
+    const executionTool = ["test_status", "execution_summary", "execution_output"].includes(name);
+    const scope = executionTool ? "execution.read" : name.startsWith("git_") ? "git.read" : name === "search_workspace" ? "workspace.search" : "workspace.read";
+    const selector = z.string().min(1).describe("Absolute local workspace directory. Required in shared mode.");
+    server.registerTool<z.ZodRawShape, z.ZodRawShape>(name, {
+      ...config,
+      description: config.description + " Select the local folder with workspace_path; use run_id for run-scoped review.",
+      inputSchema: {
+        ...config.inputSchema,
+        workspace_path: router.multiWorkspace ? selector : selector.optional(),
+        run_id: router.multiWorkspace && executionTool ? runIdSchema : runIdSchema.optional(),
+      },
+      outputSchema: { ...config.outputSchema, ...identitySchema },
+    }, async (args, extra) => {
+      const denied = requireScope(extra.authInfo, scope);
+      if (denied) return denied;
+      let identity: Record<string, unknown> = {};
+      try {
+        const workspace = router.resolve(args.workspace_path as string | undefined, extra.authInfo);
+        const runId = args.run_id as string | undefined;
+        identity = { workspaceId: workspace.id, workspacePath: workspace.root, workspaceName: workspace.name, ...(runId ? { runId } : {}) };
+        if (runId) readRun(runId, workspace.id);
+        const result = await callback(args as z.output<z.ZodObject<I>>, workspace, runId);
+        const data = { ...JSON.parse(result.content[0].text) as Record<string, unknown>, ...identity };
+        return result.isError ? { ...fail(String(data.error), String(data.message)), content: [{ type: "text" as const, text: JSON.stringify(data) }] } : okStructured(data);
+      } catch (error) {
+        const result = mapError(error);
+        return { ...result, content: [{ type: "text" as const, text: JSON.stringify({ ...JSON.parse(result.content[0].text), ...identity }) }] };
+      }
+    });
+  }
+
+  register(
     "workspace_info",
     {
       title: "Workspace info",
@@ -202,9 +248,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
       outputSchema: workspaceInfoOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async (_args, extra) => {
-      const denied = requireScope(extra.authInfo, "workspace.read");
-      if (denied) return denied;
+    async (_args, workspace, runId) => {
       try {
         const project = workspace.detectProject();
         const git = gitInfo(workspace.root);
@@ -226,7 +270,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
     }
   );
 
-  server.registerTool(
+  register(
     "list_directory",
     {
       title: "List directory",
@@ -242,9 +286,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
       outputSchema: listDirectoryOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async (args, extra) => {
-      const denied = requireScope(extra.authInfo, "workspace.read");
-      if (denied) return denied;
+    async (args, workspace, runId) => {
       try {
         return okStructured(await workspace.listDirectory(args.path, args));
       } catch (error) {
@@ -253,7 +295,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
     }
   );
 
-  server.registerTool(
+  register(
     "read_file",
     {
       title: "Read file",
@@ -269,9 +311,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
       outputSchema: readFileOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async (args, extra) => {
-      const denied = requireScope(extra.authInfo, "workspace.read");
-      if (denied) return denied;
+    async (args, workspace, runId) => {
       try {
         return okStructured(await workspace.readFile(args.path, { startLine: args.start_line, endLine: args.end_line }));
       } catch (error) {
@@ -280,7 +320,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
     }
   );
 
-  server.registerTool(
+  register(
     "search_workspace",
     {
       title: "Search workspace",
@@ -297,9 +337,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
       outputSchema: searchWorkspaceOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async (args, extra) => {
-      const denied = requireScope(extra.authInfo, "workspace.search");
-      if (denied) return denied;
+    async (args, workspace, runId) => {
       try {
         return okStructured(await searchWorkspace(workspace, args));
       } catch (error) {
@@ -308,7 +346,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
     }
   );
 
-  server.registerTool(
+  register(
     "git_status",
     {
       title: "Git status",
@@ -317,9 +355,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
       outputSchema: gitStatusOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async (_args, extra) => {
-      const denied = requireScope(extra.authInfo, "git.read");
-      if (denied) return denied;
+    async (_args, workspace, runId) => {
       try {
         return okStructured(gitStatus(workspace));
       } catch (error) {
@@ -328,7 +364,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
     }
   );
 
-  server.registerTool(
+  register(
     "git_diff",
     {
       title: "Git diff",
@@ -344,9 +380,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
       outputSchema: gitDiffOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async (args, extra) => {
-      const denied = requireScope(extra.authInfo, "git.read");
-      if (denied) return denied;
+    async (args, workspace, runId) => {
       try {
         let relPath: string | undefined;
         if (args.path) {
@@ -365,7 +399,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
     }
   );
 
-  server.registerTool(
+  register(
     "test_status",
     {
       title: "Test status",
@@ -376,10 +410,8 @@ export function createMcpServer(ctx: McpContext): McpServer {
       outputSchema: testStatusOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async (_args, extra) => {
-      const denied = requireScope(extra.authInfo, "execution.read");
-      if (denied) return denied;
-      const latest = latestExecutionRecord(workspace.id);
+    async (_args, workspace, runId) => {
+      const latest = latestExecutionRecord(workspace.id, runId);
       if (!latest) {
         return okStructured({ available: false, message: "No execution records yet for this workspace." });
       }
@@ -396,7 +428,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
     }
   );
 
-  server.registerTool(
+  register(
     "execution_summary",
     {
       title: "Execution summary",
@@ -409,14 +441,12 @@ export function createMcpServer(ctx: McpContext): McpServer {
       outputSchema: executionSummaryOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async (args, extra) => {
-      const denied = requireScope(extra.authInfo, "execution.read");
-      if (denied) return denied;
-      return okStructured({ records: readExecutionRecords(workspace.id, args.limit) });
+    async (args, workspace, runId) => {
+      return okStructured({ records: readExecutionRecords(workspace.id, args.limit, runId) });
     }
   );
 
-  server.registerTool(
+  register(
     "execution_output",
     {
       title: "Execution output",
@@ -432,12 +462,10 @@ export function createMcpServer(ctx: McpContext): McpServer {
       outputSchema: executionOutputOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async (args, extra) => {
-      const denied = requireScope(extra.authInfo, "execution.read");
-      if (denied) return denied;
+    async (args, workspace, runId) => {
       const action = args.action ?? "list";
       if (action === "list") {
-        const items = listExecutionOutputs(workspace.id, args.limit).map((item) => ({
+        const items = listExecutionOutputs(workspace.id, args.limit, runId).map((item) => ({
           id: item.id,
           command: item.command,
           exitCode: item.exitCode,
@@ -452,7 +480,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
         return okStructured({ action: "list", items });
       }
       if (args.id === undefined) return fail("INVALID_ARGUMENTS", "read requires id");
-      const result = readExecutionOutput(workspace.id, args.id);
+      const result = readExecutionOutput(workspace.id, args.id, runId);
       if (!result.ok) {
         if (result.error === "OUTPUT_RESTRICTED") {
           return fail("OUTPUT_RESTRICTED", "This output was not released for ChatGPT to read.");

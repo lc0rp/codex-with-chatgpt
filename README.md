@@ -17,7 +17,7 @@ No API keys, no reverse proxy — official web UI plus a read-only MCP bridge.
 Use the ChatGPT web app as the planning and review brain for your
 Codex coding sessions, while Codex keeps full ownership of execution. Your
 repository is never uploaded: ChatGPT reads exactly the lines it needs through
-a secure, OAuth-protected, **read-only** MCP connection to your current
+a secure, OAuth-protected, **read-only** MCP connection to the selected
 workspace.
 
 The detailed documentation below is in English. For the full Chinese documentation,
@@ -92,6 +92,25 @@ then saves that collection link and starts chats from that page. Existing
 workspaces that already have a C2C chat stay on the old one-conversation
 style until you ask to switch.
 
+### One connector for all your projects
+
+Enable shared mode once with explicit approval of your local project roots:
+
+```bash
+c2c connection configure --allow-root /absolute/path/to/projects --json
+c2c setup -w /absolute/path/to/projects/app-a --json
+```
+
+Pair the returned **Codex with ChatGPT · Shared** connector. Subsequent tasks
+supply their local folder and ChatGPT Project URL; the updated skill creates an
+isolated run and reuses the same connection. Every MCP tool selects its folder
+explicitly, and execution tools also select the run. One folder can use several
+web Projects, or one web Project can contain several folders.
+
+Existing single-workspace connections keep working until you opt in. Existing
+tokens never gain broader access automatically. See [shared-workspace setup,
+run commands, and migration](docs/shared-workspaces.md).
+
 ### Optional stable hostname
 
 The default public address is a temporary Cloudflare URL. It changes when the
@@ -147,9 +166,10 @@ Credentials stay in the OS app state directory, not in the project.
 
 - **Read-only by construction**: write/delete/shell/commit tools simply do not
   exist on the server. No prompt injection can enable them.
-- **One workspace = one boundary**: every token is bound to a single workspace;
-  path containment uses canonical realpaths (symlink/`../`/absolute-path escapes
-  are all blocked and tested).
+- **Explicit folder authorization**: legacy tokens remain bound to one workspace.
+  Shared tokens carry consented roots and an MCP audience; each call intersects
+  those roots with current server policy before applying selected-folder containment.
+  Symlink/`../`/absolute-path escapes remain blocked and tested.
 - **Sensitive files never leave**: `.env*`, keys, SSH, credentials are denied by
   default (`.env.example` allowed); `.c2cignore` adds your own rules.
 - **Knowing the URL grants nothing**: the public MCP endpoint requires OAuth 2.1
@@ -166,7 +186,7 @@ Full threat model: [docs/security.md](docs/security.md)
 ```bash
 pnpm install
 pnpm build          # -> dist/, exposes the `c2c` bin
-pnpm test           # vitest: 150 tests (path security, OAuth, pairing, MCP e2e)
+pnpm test           # vitest: legacy + shared routing, OAuth, CLI, MCP integration
 
 c2c setup           # bridge + tunnel + pairing code, all in one
 c2c sandbox-allow   # whitelist the settings dir in Codex (macOS + Windows)
@@ -178,7 +198,8 @@ Requirements: Node.js >= 20, git. `cloudflared` for the public connection
 `C2C_TUNNEL_PROTOCOL=http2` and restart the bridge.
 
 Docs: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
-[security](docs/security.md) · [troubleshooting](docs/troubleshooting.md)
+[security](docs/security.md) · [shared workspaces](docs/shared-workspaces.md) ·
+[troubleshooting](docs/troubleshooting.md)
 
 ## Project layout
 
