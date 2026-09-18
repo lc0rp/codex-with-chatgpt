@@ -14,9 +14,71 @@ ChatGPT thinks. Codex works.
 
 You (Codex) own execution: editing, shell, git, tests, recovery.
 ChatGPT owns high-level reasoning: understanding, planning, review, debug strategy.
-The C2C Bridge gives ChatGPT read-only MCP access to the current workspace, so
+The C2C Bridge gives ChatGPT read-only MCP access to explicitly selected workspaces, so
 control messages between you and ChatGPT stay tiny (< 1 KB) — ChatGPT pulls
 whatever data it needs by itself.
+
+## Shared connection and explicit run routing
+
+Read `c2c connection get --json` before setup or a coding task. Missing shared
+configuration means legacy single-workspace behavior. Do not migrate or broaden
+access without the user's approval of the exact absolute parent directories.
+To enable shared mode after that approval:
+
+```bash
+c2c connection configure --allow-root /absolute/path/to/projects --json
+c2c setup -w /absolute/path/to/projects/example --json
+```
+
+Use the returned `connectorName` (normally `Codex with ChatGPT · Shared`) for
+all authorized folders. Connection setup, tunnel choice, doctor, repair, and
+unpair operate on that single connection. A new folder or a different ChatGPT
+Project does not require another connector, process, tunnel, or OAuth grant.
+When changing approved roots, stop the shared bridge first, configure the roots,
+then start and explicitly authorize the new scope. Existing grants never expand
+automatically. Legacy connectors and state remain untouched during migration.
+
+For **every shared-mode task**, resolve the local workspace and requested
+ChatGPT Project URL from the user's current instructions. Explicit values take
+precedence over saved defaults. Create a run before saving active conversation
+state or execution results:
+
+```bash
+c2c run create -w /absolute/path/to/project --project-url https://chatgpt.com/g/g-p-ID/project --json
+```
+
+Save the returned `runId` and canonical `workspacePath` in this Codex thread.
+Use `--codex-thread-id` when available. To resume, use the run ID already bound
+to this thread with `c2c run get -w <ws> --run-id <run> --json`; never select the
+latest workspace-wide session or another thread's run. A new run inherits only
+pairing preferences, never another chat pointer or checkpoint.
+
+**Routing rules for every workflow and command example below:**
+
+- In shared mode, add `--run-id <run>` to **every** `c2c session get/set/clear`
+  and `c2c record` call that handles this task. `c2c session get` without a run
+  reads optional workspace defaults only. A defaults-only `session set` may
+  save `--mode`, `--project-url`, or `--connector-name`; it must never save active
+  chat/checkpoint fields. The run's values always win.
+- Include `WORKSPACE_PATH`, `RUN_ID`, and `PROJECT_URL` in the boot context and
+  all INIT, EXECUTED, and HANDOFF messages. Carry the same routing fields in
+  ChatGPT replies. No log or file bodies belong in those messages.
+- ChatGPT must pass `workspace_path` on **all nine MCP tools**, plus `run_id`
+  for the current run (mandatory on the three execution tools). Call
+  `workspace_info({workspace_path: "<ws>", run_id: "<run>"})` first and verify
+  the canonical path and ID, not only the display name. Stop on a mismatch.
+  Neither an omitted selector nor `set_current_workspace` is a valid shortcut.
+- Open or verify the exact requested ChatGPT Project using the existing browser
+  workflow, and save its chat URL only in this run. Different folders may share
+  one web Project; one folder may use different web Projects in separate runs.
+  The Project URL is browser/bookkeeping context, never proof of filesystem
+  authorization, and is not a required filesystem-tool parameter.
+- Use shared Project instructions below. Do not overwrite a multi-folder web
+  Project's instructions with one folder's identity. Scope any durable notes
+  by workspace identity. Verify the routing context again after HANDOFF.
+
+In legacy mode the existing no-selector MCP calls and workspace session commands
+remain supported. A legacy token stays limited to its original workspace.
 
 **Golden rules**
 
@@ -60,19 +122,14 @@ whatever data it needs by itself.
      ChatGPT must run in the built-in browser." Only if the user replies
      with an explicit "I accept the disruption" may you proceed in their browser; otherwise
      keep ChatGPT in the built-in browser, every time they ask.
-6. Conversation reuse depends on `c2c session --json` → `conversation.mode`
-   (see Conversation management). Do not invent a second mode.
-   - **long-chat** (legacy session file, or the user opted out): ONE ChatGPT
-     conversation per workspace. Never silently start a new chat.
-   - **project** (new workspaces, or an existing workspace that opted in):
-     ONE ChatGPT Project (collection) per workspace. Same Codex conversation
-     reuses the ChatGPT chat URL saved in THIS thread. A new Codex
-     conversation opens a new chat from the Project collection page — never
-     `goto` `https://chatgpt.com/` to create it, and never reuse another
-     Codex conversation's chat URL just because `session.url` exists.
-   Each workspace also has exactly ONE ChatGPT connector. Do not create a
-   second connector for the same workspace. Other workspaces may have their
-   own connectors — never edit those.
+6. Conversation reuse follows the current run's session in shared mode, or
+   `c2c session --json` in legacy mode (see Conversation management).
+   - **long-chat:** reuse this run's chat, or the legacy workspace's saved chat.
+   - **project:** reuse the chat already bound in THIS Codex thread. A new run
+     opens a new chat from its exact Project URL. Never reuse another run's chat.
+   Shared mode uses ONE connector for all approved folders and independent
+   workspace/Project pairs. Legacy mode keeps one connector per workspace.
+   Never edit unrelated legacy connectors while setting up the shared connector.
 7. After first-time setup, never ask the user to approve writing C2C's local
    settings directory. Run `c2c sandbox-allow --json` (idempotent). If it fails
    with EPERM / Operation not permitted, request elevated permissions and retry
@@ -134,7 +191,7 @@ that close the tab, hide the window, or stall on the settings page.
      (`https://chatgpt.com/g/g-p-…/project`)
    Never click Reconnect / Refresh on an existing connector. The old address is
    dead and that page hangs on "This site cannot be reached". When the address
-   changed: Delete THIS workspace's `connectorName` only, then create it again
+   changed: Delete the active connection's `connectorName` only, then create it again
    via the Add a connector URL (same name, new Server URL). Do not put that public
    address into Project instructions — write the connector **name** only.
 
@@ -228,7 +285,7 @@ Inside the checkout directory (see Locations):
 5. Tell the user "✓ Updated to the latest version" — then resume whatever task triggered this.
    (The updated SKILL.md takes effect from the next Codex session; that's expected.)
 
-## Connection choice (once per workspace)
+## Connection choice (once per connection)
 
 Ask this **before** the public address exists (`c2c setup` / first `doctor --fix`
 that starts a tunnel). Do not mention tunnels, wrangler, DNS, or hostnames.
@@ -262,8 +319,9 @@ Speak only of temporary address / stable domain / logging in to Cloudflare.
    to `[sandbox_workspace_write].writable_roots` so later chats can write logs
    without elevation. If the write is denied, request approval and retry once.
    → returns `{ mcpUrl, pairingCode, workspaceName, connectorName, ... }`.
-   `connectorName` is this workspace's plugin title (legacy installs stay
-   `Codex with ChatGPT`; additional workspaces get `Codex with ChatGPT · <name>`).
+   `connectorName` is the active connection's plugin title. Shared mode uses
+   `Codex with ChatGPT · Shared`; legacy names stay workspace-specific.
+   Reuse a healthy existing shared connector when selecting another folder.
    Pairing codes expire in ~5 minutes. Do not mint one until the ChatGPT
    Authorize / pairing form is on screen: run `c2c pair --json` then type
    that code immediately. Doctor does not pre-mint a code.
@@ -306,8 +364,10 @@ Speak only of temporary address / stable domain / logging in to Cloudflare.
    in long-chat). Confirm Chat mode per **In-app browser** §7 (if it is Work,
    open a new Chat conversation instead). Send the boot prompt from
    `docs/protocol.md` §Boot Prompt, then (same chat) send:
-   `Use the "<connectorName>" connector: call workspace_info and read hello-style top-level file. Reply with the workspace name.`
-   Confirm the reply matches `workspaceName` (wait per **In-app browser** §8).
+   `Use the "<connectorName>" connector. Workspace path: <canonical path>. Run ID: <run>. Call workspace_info with workspace_path and run_id, then read a hello-style top-level file with the same selectors. Reply with workspacePath and workspaceName.`
+   In legacy mode the selectors may be omitted. Confirm the canonical path and
+   actual workspace identity match the requested folder (shared setup
+   `workspaceName` describes the connection, not the selected folder) (wait per **In-app browser** §8).
    Only then save the chat URL with `c2c session set` (see Conversation
    management). If the name does not match, do not save. markDeliverable.
 7. Report to the user exactly in this shape (no internals):
@@ -381,7 +441,8 @@ Project sources. Never click Share. Do not rename ChatGPT chats.
 
 ### long-chat (do not rewrite this path)
 
-ONE ChatGPT conversation per workspace. Same as before.
+Legacy mode keeps one ChatGPT conversation per workspace. Shared mode keeps
+one conversation per run; read and write it with `--run-id`.
 
 - **Find it**: if `conversation.reuseSavedChat` and `conversation.chatUrl`,
   `goto` that URL (foreground + markHandoff) and continue there.
@@ -408,14 +469,17 @@ ONE ChatGPT conversation per workspace. Same as before.
 
 ### project (new workspaces)
 
-One ChatGPT Project per workspace. Mapping:
+Shared mode selects the exact Project per run, with workspace preferences as
+optional defaults. Legacy mode retains its saved Project per workspace. Mapping:
 
 1. Same Codex conversation (this thread still has context) → same ChatGPT
    chat URL. `goto` that URL directly. Do not open the collection first.
 2. Same workspace, a **new** Codex conversation → new ChatGPT chat from the
    collection page (`conversation.projectUrl`). Ignore `session.url` unless
    you already saved it earlier in THIS Codex thread.
-3. Different workspace → different Project and different connector.
+3. Shared mode: any approved workspace / web Project pair reuses the same
+   connector; the new run supplies its own path and Project URL. Legacy mode
+   continues using the other workspace's own connector and saved pairing.
 
 **Open a chat in this Codex thread**
 
@@ -444,8 +508,9 @@ then save the new chat URL. Keep `--project-url`.
 
 ### Bind Project (user creates the collection once)
 
-Do this for a new workspace, or when an existing user asks to switch to
-Project. Do **not** click the ChatGPT sidebar to create the Project
+Do this only when no requested or saved Project URL exists, or when the user
+explicitly asks to create a Project. An existing requested Project can be reused
+for multiple folders in shared mode. Do **not** click the ChatGPT sidebar to create the Project
 (Computer Use is forbidden; IAB must not hunt that menu).
 
 1. Tell the user exactly this (fill in the workspace name):
@@ -477,34 +542,27 @@ The collection page will open after you create the project. Tell me "done" when 
 ### Project instructions (paste into Project settings → Instructions)
 
 ```
-You are the planning and review layer for one local workspace. Codex executes.
+You are the planning and review layer for Codex. Codex owns execution.
+Connector: {{connector_name}}
 
-This Project is bound only to:
-- Workspace name: {{workspace_name}}
-- Kind: {{project_type}} ({{languages}} / {{frameworks}})
-- Connector (use this one only): {{connector_name}}
+Each run identifies WORKSPACE_PATH, RUN_ID, and PROJECT_URL in this chat.
+Use that exact connector and pass workspace_path on every tool call. Pass
+run_id on every execution tool and on other calls when provided. First call
+workspace_info with this context and verify workspacePath and workspaceId.
+Stop if the context is missing, unauthorized, or mismatched. Never infer a
+folder or run from another chat, a display name, or this Project's memory.
+A legacy single-workspace connector may omit selectors after identity checks.
 
-When you call tools, use ONLY that connector. Do not use any other
-Codex with ChatGPT connector. If workspace_info names a different
-workspace, stop. Do not plan. Do not use this Project's memory.
+Read code, git, diffs, and released command output through the connector.
+Never ask for pasted files, diffs, or logs. After EXECUTED, call
+execution_output for this workspace/run (list, then read a readable item);
+if restricted, review from git. Never upload the repository as Project sources.
 
-Read code, git, diffs, and any released command output through that
-connector. Never ask anyone to paste file bodies, diffs, or logs. After
-EXECUTED, call execution_output (list, then read) when a readable item
-exists; if status is restricted, review from git instead. Never upload
-the repo into this Project's files or sources.
-
-When facts conflict, trust this order:
-1. Current code from the connector
-2. A HANDOFF in this chat (this task's goal, progress, next step)
-3. These instructions
-4. This Project's memory (durable architecture only; stale memory loses)
-
-This Project's memory is only for this workspace. On HANDOFF, trust the
-brief, re-read code through the connector, and resume at NEXT_EXPECTED_STEP.
-
-Be substantive: why, which file, what to test. No empty one-liners and
-no 40-step epics. Use C2C control messages.
+Trust current code first, this run's HANDOFF second, and workspace-scoped
+Project notes last. This Project may contain several local workspaces; notes
+from one workspace must not become evidence about another. Preserve routing
+fields on replies and HANDOFF, then re-read current code before resuming.
+Give file-level rationale, changes, tests, and success criteria in C2C messages.
 ```
 
 ## Workflow: coding task ("Use Codex with ChatGPT to complete XXX")
@@ -516,7 +574,8 @@ Do not invent `STATE: RESUME`. If the original chat is gone, send HANDOFF.
 All control messages start with `[C2C]`. Keep Codex→ChatGPT messages under 1 KB.
 ChatGPT's replies are expected to be substantive (see step 3). Docs: `docs/protocol.md`.
 
-0. `c2c tunnel status -w <workspace> --json`. If `needsChoice`, follow
+0. Resolve the shared-mode run context above first. Then
+   `c2c tunnel status -w <workspace> --json`. If `needsChoice`, follow
    **Connection choice** first (existing installs: ask once, then remember).
    Then `c2c doctor -w <workspace> --json` (auto-repairs). **Doctor gate:** if local
    is not green, do not open ChatGPT and do not send INIT. If
@@ -527,7 +586,8 @@ ChatGPT's replies are expected to be substantive (see step 3). Docs: `docs/proto
    reclaim**, then doctor again and only continue when the gate is green.
    Generate task id: `c2c_` + 4 random hex chars — unless a checkpoint already
    has one (reuse that id; do not mint a second task).
-1. `c2c session -w <workspace> --json`. Open ChatGPT on the same iab tab
+1. `c2c session get -w <workspace> --run-id <run> --json` in shared mode;
+   `c2c session -w <workspace> --json` in legacy mode. Open ChatGPT on the same iab tab
    per **Conversation management** for `conversation.mode` (foreground +
    markHandoff). long-chat: saved chat, or `https://chatgpt.com/` if none.
    project: this thread's chat URL, or the collection page for a new chat,
@@ -563,13 +623,17 @@ ChatGPT's replies are expected to be substantive (see step 3). Docs: `docs/proto
 [C2C]
 STATE: INIT
 TASK_ID: c2c_f81a
+WORKSPACE_PATH: /absolute/path/to/project
+RUN_ID: <run-id>
+PROJECT_URL: https://chatgpt.com/g/g-p-ID/project
 ITERATION: 0
 
 GOAL:
 <user's goal, one paragraph>
 
 INSTRUCTION:
-Inspect the connected workspace through the Codex with ChatGPT MCP connector.
+Inspect WORKSPACE_PATH through the named connector. Use workspace_path and
+run_id from this message, including for execution history and output.
 Produce a C2C PLAN message.
 ```
 
@@ -610,6 +674,9 @@ Produce a C2C PLAN message.
 [C2C]
 STATE: EXECUTED
 TASK_ID: c2c_f81a
+WORKSPACE_PATH: /absolute/path/to/project
+RUN_ID: <run-id>
+PROJECT_URL: https://chatgpt.com/g/g-p-ID/project
 ITERATION: 1
 
 RESULT:
@@ -640,11 +707,15 @@ If status is restricted, ignore it and review from git_diff.
 
 ## Workflow: disconnect ("Disconnect ChatGPT")
 
-1. `c2c unpair -w <workspace>` (revokes all tokens immediately).
+1. In shared mode, explain that disconnecting revokes access for ALL approved
+   folders, and confirm that scope if the user asked to disconnect only one
+   project. `c2c unpair -w <workspace>` revokes the active connection's tokens.
+   To remove one folder, stop the bridge and narrow the approved root list with
+   explicit approval; a parent-root grant includes all its descendants.
 2. Optionally remove the connector on the same iab tab via
    `https://chatgpt.com/plugins` (foreground + markHandoff). Only touch
-   this workspace's `connectorName`.
-3. Tell the user: "ChatGPT's access to this project has been disconnected."
+   the active connection's `connectorName`.
+3. Confirm whether the shared connection or the legacy project was disconnected.
 
 ## Workflow: reconnect after address reclaim (address expires after everything is closed)
 
@@ -718,7 +789,7 @@ the previous public address is gone. Doctor already started a new one.
 | Symptom | Action |
 | --- | --- |
 | Bridge not running | `c2c start` (doctor does this automatically) |
-| Tunnel dead / URL unreachable / Connection fails after everything is closed | `c2c doctor` → if `namedRepair.needed`, login to Cloudflare and doctor again (do not Delete). If `chatgptRepair.needed`, tell the user the message, then **Delete** THIS workspace's connector only (`connectorName`) and create it again. Never Reconnect. After recreate, re-check `workspace_info` in the saved chat; if it still fails, new chat in the same Project (or long-chat switch) + HANDOFF. |
+| Tunnel dead / URL unreachable / Connection fails after everything is closed | `c2c doctor` → if `namedRepair.needed`, login to Cloudflare and doctor again (do not Delete). If `chatgptRepair.needed`, tell the user the message, then **Delete** the active connection's connector only (`connectorName`) and create it again. Never Reconnect. After recreate, re-check `workspace_info` in the saved chat; if it still fails, new chat in the same Project (or long-chat switch) + HANDOFF. |
 | Collection page shows only Retry | Same iab tab: Retry once, then open the last working chat and click its Project link. Do not write INIT/EXECUTED waiting checkpoints until the message is visible. |
 | ChatGPT says tool call failed / 401 | token expired or revoked → re-pair (new pairing code + authorize) |
 | Pairing code rejected/expired | `c2c pair --json` for a fresh code |

@@ -13,6 +13,8 @@ export interface RuntimeState {
   version: string;
   workspaceId: string;
   workspaceRoot: string;
+  mode?: "single" | "shared";
+  allowedRoots?: string[];
   pid: number;
   port: number;
   adminToken: string;

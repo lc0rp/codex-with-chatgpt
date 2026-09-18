@@ -1,5 +1,32 @@
 # C2C Agent Protocol
 
+## Explicit routing in shared mode
+
+The shared bridge has no current-workspace switch. Every control message carries
+`WORKSPACE_PATH` (canonical absolute path), `RUN_ID`, and `PROJECT_URL` (or none
+for long-chat). The same context survives INIT, PLAN, EXECUTED, review, and
+HANDOFF. The examples below show these fields; legacy single-workspace clients
+may omit them during migration.
+
+Create the run locally with `c2c run create -w <path> --project-url <url> --json`.
+Use the returned `runId` on every `c2c record` and active `c2c session get/set/clear`
+command via `--run-id`. `sessions/<workspaceId>.json` supplies optional pairing
+preferences; `runs/<runId>.json` owns the active chat and checkpoint. Never resume
+from a workspace-wide latest record. A run ID cannot be rebound to another path.
+
+ChatGPT first calls `workspace_info` with `workspace_path` and `run_id`, verifies
+both canonical path and workspace identity, then preserves those selectors on
+all subsequent calls. All nine tools require `workspace_path` in shared mode;
+`test_status`, `execution_summary`, and `execution_output` also require `run_id`.
+All successful results include `workspaceId`, `workspacePath`, `workspaceName`,
+and the run ID when supplied. File paths remain relative to the selected folder.
+
+The web Project URL controls browser navigation and run bookkeeping. It never
+authorizes a filesystem path or changes the MCP connection. The same connector
+supports several folders in one web Project or one folder in several Projects.
+Missing or mismatched routing fails instead of falling back to another run.
+
+
 Control plane: Computer Use (tiny structured messages typed into the ChatGPT UI).
 Data plane: MCP (ChatGPT pulls files, diffs, search results itself).
 
@@ -57,6 +84,9 @@ Keep messages < 1 KB. No diffs, no logs, no file bodies.
 [C2C]
 STATE: INIT
 TASK_ID: c2c_f81a
+WORKSPACE_PATH: /absolute/path/to/project
+RUN_ID: <run-id>
+PROJECT_URL: https://chatgpt.com/g/g-p-ID/project
 ITERATION: 0
 
 GOAL:
@@ -73,6 +103,9 @@ Create an implementation plan for Codex.
 [C2C]
 STATE: PLAN
 TASK_ID: c2c_f81a
+WORKSPACE_PATH: /absolute/path/to/project
+RUN_ID: <run-id>
+PROJECT_URL: https://chatgpt.com/g/g-p-ID/project
 ITERATION: 1
 
 GOAL:
@@ -104,6 +137,9 @@ Plans must be finite, concrete, executable. Not 40-step epics.
 [C2C]
 STATE: EXECUTED
 TASK_ID: c2c_f81a
+WORKSPACE_PATH: /absolute/path/to/project
+RUN_ID: <run-id>
+PROJECT_URL: https://chatgpt.com/g/g-p-ID/project
 ITERATION: 1
 
 RESULT:
@@ -136,6 +172,9 @@ stay valid. Never paste logs into the control message.
 [C2C]
 STATE: DONE
 TASK_ID: c2c_f81a
+WORKSPACE_PATH: /absolute/path/to/project
+RUN_ID: <run-id>
+PROJECT_URL: https://chatgpt.com/g/g-p-ID/project
 ITERATION: 3
 
 SUMMARY:
@@ -146,6 +185,9 @@ SUMMARY:
 [C2C]
 STATE: BLOCKED
 TASK_ID: c2c_f81a
+WORKSPACE_PATH: /absolute/path/to/project
+RUN_ID: <run-id>
+PROJECT_URL: https://chatgpt.com/g/g-p-ID/project
 ITERATION: 3
 
 REASON:
@@ -157,12 +199,13 @@ NEEDS:
 
 ### HANDOFF (Codex → new ChatGPT conversation)
 
-`c2c session --json` → `conversation.mode` chooses how chats are grouped.
+`c2c session get -w <path> --run-id <run> --json` chooses the run's conversation
+mode in shared mode. Legacy mode retains `c2c session --json`.
 
-- **long-chat:** one long-lived C2C conversation per workspace. Codex opens a
+- **long-chat:** one conversation per run (per workspace in legacy mode). Codex opens a
   replacement chat only when the user asks, the old chat lags, or the chat was
   lost.
-- **project:** one ChatGPT Project (collection) per workspace. A new Codex
+- **project:** the explicit or default ChatGPT Project selected for this run. A new Codex
   conversation starts a new chat **inside that Project**. The same Codex
   conversation keeps using its saved chat URL.
 
@@ -178,6 +221,9 @@ instructions > Project memory.
 [C2C]
 STATE: HANDOFF
 TASK_ID: c2c_f81a
+WORKSPACE_PATH: /absolute/path/to/project
+RUN_ID: <run-id>
+PROJECT_URL: https://chatgpt.com/g/g-p-ID/project
 ITERATION: 4
 
 ORIGINAL_GOAL:
@@ -213,7 +259,15 @@ Codex owns execution.
 You own high-level reasoning, planning and review.
 
 You have access to the current local workspace through the
-"Codex with ChatGPT" MCP connector.
+"{{connector_name}}" MCP connector.
+
+WORKSPACE_PATH: {{canonical_workspace_path}}
+RUN_ID: {{run_id}}
+PROJECT_URL: {{project_url}}
+
+Call workspace_info with workspace_path and run_id first. Verify its canonical
+path and ID. Use these selectors on every subsequent call; never switch
+workspace implicitly. Legacy single-workspace mode may omit selectors.
 
 Rules:
 
@@ -238,44 +292,39 @@ Rules:
 12. If you receive a HANDOFF message, this conversation continues an
     existing task. Trust the handoff brief for history, re-read any code
     you need through MCP, and resume from NEXT_EXPECTED_STEP.
-13. If this chat sits in a ChatGPT Project, use only the connector named
-    in that Project's instructions. Do not use another workspace's connector.
+13. Use the named connector and the routing context of this run. A shared
+    web Project can contain multiple workspaces; never infer this run's path
+    from another conversation or Project memory.
 ```
 
 ## Project instructions
 
-New workspaces store durable identity in the ChatGPT Project settings
-(Instructions), not in every boot prompt. The Skill fills this template once.
+Project settings store the connector name and routing rules. Each run supplies
+its own workspace identity in the boot prompt. The Skill fills this template
+without binding a shared Project to a single folder.
 Never put a public or temporary URL in the instructions — only the
 connector **name**.
 
 ```
-You are the planning and review layer for one local workspace. Codex executes.
+You are the planning and review layer for Codex. Codex owns execution.
+Connector: {{connector_name}}
 
-This Project is bound only to:
-- Workspace name: {{workspace_name}}
-- Kind: {{project_type}} ({{languages}} / {{frameworks}})
-- Connector (use this one only): {{connector_name}}
+Each run identifies WORKSPACE_PATH, RUN_ID, and PROJECT_URL in this chat.
+Use that exact connector and pass workspace_path on every tool call. Pass
+run_id on every execution tool and on other calls when provided. First call
+workspace_info with this context and verify workspacePath and workspaceId.
+Stop if the context is missing, unauthorized, or mismatched. Never infer a
+folder or run from another chat, a display name, or this Project's memory.
+A legacy single-workspace connector may omit selectors after identity checks.
 
-When you call tools, use ONLY that connector. Do not use any other
-Codex with ChatGPT connector. If workspace_info names a different
-workspace, stop. Do not plan. Do not use this Project's memory.
+Read code, git, diffs, and released command output through the connector.
+Never ask for pasted files, diffs, or logs. After EXECUTED, call
+execution_output for this workspace/run (list, then read a readable item);
+if restricted, review from git. Never upload the repository as Project sources.
 
-Read code, git, diffs, and any released command output through that
-connector. Never ask anyone to paste file bodies, diffs, or logs. After
-EXECUTED, call execution_output (list, then read) when a readable item
-exists; if status is restricted, review from git instead. Never upload
-the repo into this Project's files or sources.
-
-When facts conflict, trust this order:
-1. Current code from the connector
-2. A HANDOFF in this chat (this task's goal, progress, next step)
-3. These instructions
-4. This Project's memory (durable architecture only; stale memory loses)
-
-This Project's memory is only for this workspace. On HANDOFF, trust the
-brief, re-read code through the connector, and resume at NEXT_EXPECTED_STEP.
-
-Be substantive: why, which file, what to test. No empty one-liners and
-no 40-step epics. Use C2C control messages.
+Trust current code first, this run's HANDOFF second, and workspace-scoped
+Project notes last. This Project may contain several local workspaces; notes
+from one workspace must not become evidence about another. Preserve routing
+fields on replies and HANDOFF, then re-read current code before resuming.
+Give file-level rationale, changes, tests, and success criteria in C2C messages.
 ```

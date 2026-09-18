@@ -2,6 +2,8 @@ import express, { type Request, type Response, type NextFunction } from "express
 import type { Server } from "node:http";
 import { randomBytes } from "node:crypto";
 import { Workspace } from "../workspace/manager.js";
+import { WorkspaceRouter } from "../workspace/router.js";
+import { SHARED_CONNECTION_ID } from "../config/connection.js";
 import { AuthStore } from "../auth/store.js";
 import { createOAuthRouter } from "../auth/oauth.js";
 import { bearerAuth } from "../auth/middleware.js";
@@ -31,6 +33,8 @@ function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider
 
 export interface BridgeOptions {
   workspaceRoot: string;
+  /** Explicit shared mode. Omission retains the legacy single-workspace grant. */
+  allowedRoots?: readonly string[];
   port?: number;
   host?: string;
   logger?: Logger;
@@ -82,14 +86,18 @@ function listen(app: express.Express, host: string, preferredPort: number): Prom
 export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   const logger = opts.logger ?? nullLogger;
   const workspace = new Workspace(opts.workspaceRoot);
+  const router = new WorkspaceRouter(workspace, opts.allowedRoots);
+  if (router.multiWorkspace) router.resolve(workspace.root);
+  const connectionId = router.multiWorkspace ? SHARED_CONNECTION_ID : workspace.id;
+  const connectionName = router.multiWorkspace ? "Shared projects" : workspace.name;
   const host = opts.host ?? DEFAULT_HOST;
   if (host !== "127.0.0.1" && host !== "::1" && host !== "localhost") {
     throw new Error("The bridge only binds to loopback addresses. Public exposure goes through the tunnel.");
   }
 
-  const authStore = new AuthStore(workspace.id, { file: opts.authStoreFile });
-  const pairing = new PairingManager(workspace.id, { ttlMs: opts.pairingTtlMs });
-  const tunnel = opts.tunnelProvider ?? tunnelForWorkspace(workspace.id, logger);
+  const authStore = new AuthStore(connectionId, { file: opts.authStoreFile });
+  const pairing = new PairingManager(connectionId, { ttlMs: opts.pairingTtlMs });
+  const tunnel = opts.tunnelProvider ?? tunnelForWorkspace(connectionId, logger);
   const adminToken = `c2c_admin_${randomBytes(24).toString("base64url")}`;
 
   let publicBaseUrl: string | null = null;
@@ -108,7 +116,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   // ---- Health (public but minimal) ---------------------------------------
 
   app.get("/health", (_req, res) => {
-    res.json({ service: SERVICE_NAME, version: VERSION, workspaceId: workspace.id, status: "ok" });
+    res.json({ service: SERVICE_NAME, version: VERSION, workspaceId: connectionId, status: "ok" });
   });
 
   // ---- OAuth + discovery ---------------------------------------------------
@@ -117,7 +125,8 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     createOAuthRouter({
       store: authStore,
       pairing,
-      workspaceName: workspace.name,
+      workspaceName: connectionName,
+      allowedRoots: router.allowedRoots,
       getBaseUrl,
       logger,
     })
@@ -125,11 +134,11 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   // ---- MCP endpoint (bearer-protected) --------------------------------------
 
-  const mcpHandler = createMcpHttpHandler(() => createMcpServer({ workspace, logger }), logger);
+  const mcpHandler = createMcpHttpHandler(() => createMcpServer({ workspace, router, logger }), logger);
   app.all(
     "/mcp",
     express.json({ limit: "8mb" }),
-    bearerAuth({ store: authStore, workspaceId: workspace.id, getBaseUrl, logger }),
+    bearerAuth({ store: authStore, workspaceId: connectionId, requireRootGrant: router.multiWorkspace, getBaseUrl, logger }),
     (req: Request, res: Response) => {
       void mcpHandler(req, res);
     }
@@ -161,9 +170,11 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     res.json({
       service: SERVICE_NAME,
       version: VERSION,
-      workspaceId: workspace.id,
-      workspaceName: workspace.name,
+      workspaceId: connectionId,
+      workspaceName: connectionName,
       workspaceRoot: workspace.root,
+      mode: router.multiWorkspace ? "shared" : "single",
+      allowedRoots: router.allowedRoots ? [...router.allowedRoots] : undefined,
       port,
       publicUrl: publicBaseUrl,
       tunnel: tunnel.status(),
@@ -219,8 +230,10 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     const state: RuntimeState = {
       service: SERVICE_NAME,
       version: VERSION,
-      workspaceId: workspace.id,
+      workspaceId: connectionId,
       workspaceRoot: workspace.root,
+      mode: router.multiWorkspace ? "shared" : "single",
+      allowedRoots: router.allowedRoots ? [...router.allowedRoots] : undefined,
       pid: process.pid,
       port,
       adminToken,
@@ -237,7 +250,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     closed = true;
     await tunnel.stop().catch(() => undefined);
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    if (opts.persistRuntime !== false) clearRuntimeState(workspace.id);
+    if (opts.persistRuntime !== false) clearRuntimeState(connectionId);
     logger.info("Bridge stopped");
   };
 

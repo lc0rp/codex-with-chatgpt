@@ -34,7 +34,9 @@
 - **Computer Use = control plane**: tiny `[C2C]` state messages (< 1 KB).
 - **MCP = data plane**: ChatGPT pulls files/diffs/search results itself.
 - **Read-only by design**: no write/exec tools exist in V1 at all.
-- **Workspace is the security boundary**: one bridge = one workspace = one token audience.
+- **Explicit workspace selection**: legacy bridges serve one workspace. Opt-in
+  shared bridges resolve each tool's `workspace_path` under both current policy
+  and consented token roots. The token audience identifies the MCP endpoint.
 
 ## Components (src/)
 
@@ -54,7 +56,8 @@
 ## Request lifecycles
 
 **MCP call**: ChatGPT → tunnel (https) → bridge `/mcp` → bearer middleware
-(401/403) → stateless StreamableHTTP transport → tool handler → workspace layer
+(401/403, audience) → stateless StreamableHTTP transport → per-call scope and
+workspace resolver → optional workspace/run binding → workspace layer
 (path containment → ignore rules → pagination) → JSON result.
 
 **Authorization**: 401 with `WWW-Authenticate: resource_metadata=…` →
@@ -69,7 +72,7 @@ runtime state file; users never see ports.
 
 **Tunnel**: default is a Cloudflare Quick Tunnel (`cloudflared tunnel --url …`).
 The URL changes per start, so `c2c doctor` can restart it and tell the Skill to
-Delete + recreate that workspace's ChatGPT connector. A workspace may instead
+Delete + recreate that connection's ChatGPT connector. A workspace may instead
 choose a named hostname once (`c2c tunnel choose --mode named`). The Skill asks
 before the first public URL exists; `cloudflared tunnel login` is the only extra
 user step. Tunnel name, hostname and preference live under the OS state dir
@@ -78,3 +81,27 @@ user step. Tunnel name, hostname and preference live under the OS state dir
 provisioning fails, C2C falls back to Quick Tunnel. If a named tunnel later
 drops, doctor asks for a Cloudflare re-login (`namedRepair`) instead of
 rotating the ChatGPT connector.
+
+## Shared connection and isolated runs
+
+`connection.json` enables a machine-wide `shared` connection identity. Runtime,
+OAuth store, pairing, tunnel, logs, and endpoint preferences use that identity;
+the selected workspace keeps its path-derived ID. Setup/doctor/start reuse the
+same bridge from any approved folder. A local startup lock serializes concurrent
+CLI callers; changes to roots require stopping the shared bridge.
+
+`WorkspaceRouter` constructs a fresh `Workspace` for each tool invocation. It
+canonicalizes roots and candidates, checks containment at path boundaries,
+intersects server and token roots, and carries ancestor exclusion rules into
+nested workspaces. There is no mutable current-workspace selector. All nine tool
+results carry the actual workspace identity. Ordinary folders remain supported.
+
+`runs/<runId>.json` binds one workspace to its own chat/Project/checkpoint and
+optional Codex thread identity. Only pairing preferences carry over from
+workspace sessions. Execution JSONL and output indexes are separately stored
+per workspace/run, so two runs cannot overwrite each other's latest output.
+The three execution tools require a run in shared mode and validate its binding.
+Same-run concurrent writers remain the harness's responsibility.
+
+See [setup and migration](shared-workspaces.md). Legacy state is retained;
+`connection disable` restores the old lifecycle after the shared bridge stops.

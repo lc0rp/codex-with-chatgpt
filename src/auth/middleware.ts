@@ -6,6 +6,7 @@ import type { Logger } from "../logger/index.js";
 export interface BearerAuthDeps {
   store: AuthStore;
   workspaceId: string;
+  requireRootGrant?: boolean;
   getBaseUrl: (req: Request) => string;
   logger: Logger;
 }
@@ -47,11 +48,20 @@ export function bearerAuth(deps: BearerAuthDeps) {
       });
       return;
     }
+    const resource = `${deps.getBaseUrl(req)}/mcp`;
+    if ((verdict.record.resource && verdict.record.resource !== resource) ||
+        (deps.requireRootGrant && (!verdict.record.resource || !verdict.record.allowedRoots?.length))) {
+      res.status(401)
+        .set("WWW-Authenticate", challenge("invalid_token", "Token is not authorized for this MCP resource"))
+        .json({ error: "unauthorized", error_description: "Reconnect and approve access to this shared connection." });
+      return;
+    }
     const authInfo: AuthInfo = {
       token,
       clientId: verdict.record.clientId,
       scopes: verdict.record.scopes,
       expiresAt: Math.floor(verdict.record.expiresAt / 1000),
+      extra: { allowedRoots: verdict.record.allowedRoots, workspaceId: verdict.record.workspaceId },
     };
     (req as Request & { auth?: AuthInfo }).auth = authInfo;
     next();

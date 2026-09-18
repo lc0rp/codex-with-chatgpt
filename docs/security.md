@@ -2,9 +2,12 @@
 
 ## Trust boundaries
 
-1. **Workspace root** is the smallest authorization boundary. One bridge serves
-   exactly one workspace; every token is bound to `workspace_id`; a token for
-   project A returns 403 on project B's bridge.
+1. **Connection grants and workspace containment** are separate boundaries.
+   Legacy bridges and tokens stay scoped to one workspace. Shared-mode tokens
+   carry consented canonical roots and an MCP resource audience. Each call must
+   select a workspace inside both that grant and current server roots, then
+   files must remain inside the selected workspace. A token for a different
+   connection returns 403. The Project URL grants no filesystem access.
 2. **Workspace content is untrusted.** README, comments, diffs may contain
    prompt injection. Every MCP tool description carries an explicit warning and
    tools never grant capabilities based on file content.
@@ -25,10 +28,13 @@
 | Symlink escape | Canonicalization resolves symlinks before the containment check (file and directory symlinks both covered by tests) |
 | Sensitive files | Deny-by-default patterns (.env*, keys, SSH, cloud creds, keychains…) enforced at resolve time — reads, listings, and search all pass through the same gate; `git diff` adds pathspec excludes; `.env.example` allowed |
 | Oversized file / diff DoS | read_file caps lines and bytes per response; git_diff paginates by byte offset with hard caps; search caps matches and file sizes |
-| Tunnel exposure | Bridge binds 127.0.0.1 only (refuses 0.0.0.0); the only public surface is HTTPS via the tunnel, protected by OAuth; `/health` reveals only a salted workspace hash |
+| Tunnel exposure | Bridge binds 127.0.0.1 only (refuses 0.0.0.0); the only public surface is HTTPS via the tunnel, protected by OAuth; `/health` reveals only service/version/status and the connection ID |
 | Admin API abuse | Loopback-only + random admin token (0600 runtime file) + requests with proxy headers (`cf-connecting-ip`, `x-forwarded-for`) rejected; unauthenticated probes get 404 |
 | Log credential leakage | Logger redacts token prefixes, bearer headers, token-like parameters, and pairing-code-shaped strings before writing |
 | Execution output leak | Codex may nominate test/build/lint logs; a local sanitizer redacts tokens, pairing-code-shaped strings and home paths, truncates size, and refuses private-key blocks entirely. Restricted items are listed without a body. ChatGPT still cannot run commands. |
+| Cross-run reads | Shared execution tools require run_id and verify its workspace binding; outputs and histories have separate per-run storage. A run cannot be rebound to another folder. |
+| Root-selector bypass | Every tool validates workspace_path; canonical symlinks and prefix siblings cannot escape approved roots. Ancestor sensitive/custom rules remain effective when selecting nested folders. |
+| Prompt attempts to broaden access | Root grants are configured locally and explicitly consented through OAuth. Tool arguments, file contents, and web Project URLs cannot add roots. |
 | Checkpoint / resume dump | Session checkpoints store short protocol fields only (capped). Resume uses the existing chat or HANDOFF — no new protocol state, no log paste, no re-pairing. |
 
 ## Token & scope design
@@ -36,7 +42,11 @@
 Scopes: `workspace.read`, `workspace.search`, `git.read`, `execution.read`,
 `offline_access`. Tools enforce scopes individually (`INSUFFICIENT_SCOPE`).
 Access tokens: 1 hour. Refresh tokens: 30 days, rotated. All tokens bound to
-`workspace_id` and `client_id`.
+`workspace_id` (the connection identity) and `client_id`. New OAuth grants
+also bind the intended MCP resource; shared grants snapshot approved roots on
+the consent page. Refresh rotation preserves roots, audience, and scopes.
+Unsupported requested scopes fail rather than implicitly granting all scopes.
+Resource-less legacy refresh tokens remain usable only on their legacy bridge.
 
 ## Storage
 
@@ -55,3 +65,19 @@ integration is a V2 item.
 Write files, delete files, run shell commands, commit, install packages —
 these tools do not exist on the server, so no prompt injection, scope bug, or
 UI confusion can enable them.
+
+## Shared-mode migration and revocation
+
+Shared configuration and tokens are separate from legacy workspace state. Enabling
+shared mode never imports or broadens legacy tokens. Changing roots requires
+stopping the shared bridge; newly added roots require fresh authorization. Every
+request intersects the token grant with current policy, so removed roots are
+immediately unavailable on the restarted bridge even to old tokens. Restoring
+a previously removed root can reactivate an unexpired old grant; revoke shared
+tokens first when all access must require new consent.
+
+`c2c unpair` in shared mode revokes the entire shared connection. Disabling shared
+mode preserves its state, so disabling alone is not revocation. Local state and
+run files remain owner-only. The local filesystem and the Codex harness are
+trusted; a hostile same-user process that can change roots, state, or symlinks
+concurrently is outside this read-only bridge's isolation guarantee.

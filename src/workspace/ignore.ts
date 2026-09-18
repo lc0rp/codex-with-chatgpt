@@ -76,8 +76,13 @@ export class IgnoreRules {
   private sensitive: Ignore;
   private noise: Ignore;
   private custom: Ignore;
+  private inherited: { prefix: string; rules: IgnoreRules }[];
 
-  constructor(workspaceRoot: string) {
+  constructor(workspaceRoot: string, ancestorRoots: readonly string[] = []) {
+    this.inherited = ancestorRoots.filter(root => root !== workspaceRoot).map(root => ({
+      prefix: path.relative(root, workspaceRoot).split(path.sep).join("/"),
+      rules: new IgnoreRules(root),
+    }));
     this.sensitive = ignore().add(SENSITIVE_PATTERNS);
     this.noise = ignore().add(NOISE_PATTERNS);
     this.custom = ignore();
@@ -94,7 +99,8 @@ export class IgnoreRules {
   /** True when the path must be denied with ACCESS_DENIED_SENSITIVE_FILE. */
   isSensitive(relPath: string): boolean {
     if (!relPath || relPath === ".") return false;
-    return this.sensitive.ignores(relPath) || this.custom.ignores(relPath);
+    return this.sensitive.ignores(relPath) || this.custom.ignores(relPath) ||
+      this.inherited.some(({ prefix, rules }) => rules.isSensitive(`${prefix}/${relPath}`));
   }
 
   /** True when the path should be hidden from listing/search (not an error). */

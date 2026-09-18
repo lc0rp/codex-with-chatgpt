@@ -1,3 +1,6 @@
+import { registerSharedCommands } from "./shared-commands.js";
+import { connectionForWorkspace, readSharedConnection, type ConnectionIdentity } from "../config/connection.js";
+import { readRun, updateRunSession } from "../session/runs.js";
 import { Command, InvalidArgumentError } from "commander";
 import fs from "node:fs";
 import path from "node:path";
@@ -136,7 +139,7 @@ function persistWorkspaceEndpoint(opts: {
   return connectorName;
 }
 
-function tunnelChoicePayload(workspace: Workspace, zoneHint?: string): Record<string, unknown> {
+function tunnelChoicePayload(workspace: Pick<Workspace, "id" | "name">, zoneHint?: string): Record<string, unknown> {
   const state = readTunnelState(workspace.id);
   const zone = parseZoneInput(zoneHint ?? "") ?? state.zone ?? null;
   return {
@@ -180,6 +183,8 @@ interface AdminInfo {
   workspaceId: string;
   workspaceName: string;
   workspaceRoot: string;
+  mode?: "single" | "shared";
+  allowedRoots?: string[];
   port: number;
   publicUrl: string | null;
   tunnel: { running: boolean; url: string | null; provider: string };
@@ -229,10 +234,15 @@ program
   .description("Run the bridge in the foreground (internal)")
   .requiredOption("--workspace <path>")
   .option("--port <port>", "preferred port")
-  .action(async (opts: { workspace: string; port?: string }) => {
+  .option("--connection-mode <mode>", "internal: single or shared")
+  .action(async (opts: { workspace: string; port?: string; connectionMode?: string }) => {
+    if (opts.connectionMode && !["single", "shared"].includes(opts.connectionMode)) throw new Error("Invalid connection mode");
+    const connection = opts.connectionMode === "single" ? null : readSharedConnection();
+    if (opts.connectionMode === "shared" && !connection) throw new Error("Shared connection is not configured");
     const logger = new Logger({ name: "bridge", console: true });
     const bridge = await startBridge({
       workspaceRoot: resolveWorkspace(opts.workspace),
+      allowedRoots: connection?.allowedRoots,
       port: opts.port ? parseInt(opts.port, 10) : undefined,
       logger,
     });
@@ -266,7 +276,7 @@ program
           })
         : readLastEndpoint(info.workspaceId)?.connectorName;
       if (opts.json) {
-        say(JSON.stringify({ ok: true, port: runtime.port, workspaceId: info.workspaceId, mcpUrl, connectorName }));
+        say(JSON.stringify({ ok: true, port: runtime.port, workspaceId: info.workspaceId, connectionMode: info.mode, allowedRoots: info.allowedRoots, workspacePath: root, mcpUrl, connectorName }));
         return;
       }
       check(`Project detected (${info.workspaceName})`);
@@ -318,6 +328,9 @@ program
             ok: true,
             workspaceId: info.workspaceId,
             workspaceName: info.workspaceName,
+            connectionMode: info.mode,
+            allowedRoots: info.allowedRoots,
+            workspacePath: root,
             connectorName,
             mcpUrl: mcpUrl ?? `http://127.0.0.1:${runtime.port}/mcp`,
             local: mcpUrl === null,
@@ -386,7 +399,7 @@ program
   .option("--json", "machine-readable output", false)
   .action(async (opts: { workspace?: string; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
-    const workspace = new Workspace(root);
+    const workspace = connectionForWorkspace(root);
     const observation = await findBridgeObservation(workspace.id);
     if (observation.state === "unknown") {
       if (opts.json) {
@@ -454,9 +467,9 @@ program
     }
 
     // Workspace
-    let workspace: Workspace | null = null;
+    let workspace: ConnectionIdentity | null = null;
     try {
-      workspace = new Workspace(root);
+      workspace = connectionForWorkspace(root);
       report.workspace = { ok: true, detail: workspace.name };
     } catch (error) {
       report.workspace = { ok: false, detail: (error as Error).message };
@@ -727,7 +740,7 @@ program
   .option("-w, --workspace <path>")
   .action(async (opts: { workspace?: string }) => {
     const root = resolveWorkspace(opts.workspace);
-    const workspace = new Workspace(root);
+    const workspace = connectionForWorkspace(root);
     const runtime = await findLiveBridge(workspace.id);
     if (runtime) {
       await adminFetch(runtime, "POST", "/admin/revoke-all");
@@ -747,7 +760,7 @@ program
   .option("-n, --lines <n>", "number of lines", "50")
   .option("--verbose", "include debug detail", false)
   .action((opts: { workspace?: string; lines: string; verbose: boolean }) => {
-    const workspace = new Workspace(resolveWorkspace(opts.workspace));
+    const workspace = connectionForWorkspace(resolveWorkspace(opts.workspace));
     const candidates = [
       path.join(getStateDir(), "logs", "bridge.log"),
       path.join(getStateDir(), "logs", `bridge-${workspace.id}.out.log`),
@@ -878,10 +891,11 @@ session
   .command("get", { isDefault: true })
   .description("Show the saved ChatGPT conversation / Project for this workspace")
   .option("-w, --workspace <path>")
+  .option("--run-id <id>", "use isolated run state instead of workspace preferences")
   .option("--json", "machine-readable output", false)
-  .action((opts: { workspace?: string; json: boolean }) => {
+  .action((opts: { workspace?: string; runId?: string; json: boolean }) => {
     const workspace = new Workspace(resolveWorkspace(opts.workspace));
-    const saved = readSession(workspace.id);
+    const saved = opts.runId ? readRun(opts.runId, workspace.id).session : readSession(workspace.id);
     const conversation = resolveConversation(saved);
     if (opts.json) say(JSON.stringify({ ok: true, session: saved, conversation }));
     else if (!saved) {
@@ -905,6 +919,7 @@ session
   .command("set")
   .description("Save the ChatGPT Project and/or conversation for this workspace")
   .option("-w, --workspace <path>")
+  .option("--run-id <id>", "use isolated run state instead of workspace preferences")
   .option("--url <url>", "ChatGPT conversation URL from the address bar")
   .option("--title <title>")
   .option("--task <id>")
@@ -922,7 +937,7 @@ session
   .option("--clear-checkpoint", "drop the active checkpoint (task DONE)", false)
   .action(
     (opts: {
-      workspace?: string;
+      workspace?: string; runId?: string;
       url?: string;
       title?: string;
       task?: string;
@@ -957,7 +972,10 @@ session
       if (waitingNorm && !WAITING_FOR.includes(waitingNorm as WaitingFor)) {
         throw new Error(`waiting-for must be one of ${WAITING_FOR.join(", ")}`);
       }
-      const saved = mergeSession(readSession(workspace.id), {
+      if (!opts.runId && readSharedConnection() && (opts.protocolState || opts.task || opts.url || opts.title || opts.iteration || opts.state || opts.waitingFor || opts.goal || opts.completedSubtasks || opts.knownIssues || opts.nextStep || opts.clearCheckpoint)) {
+        throw new Error("Shared mode requires --run-id for active chat/checkpoint state. Use c2c run create first.");
+      }
+      const saved = mergeSession(opts.runId ? readRun(opts.runId, workspace.id).session : readSession(workspace.id), {
         url: opts.url,
         title: opts.title,
         taskId: opts.task,
@@ -978,7 +996,8 @@ session
             }
           : undefined,
       });
-      writeSession(workspace.id, saved);
+      if (opts.runId) updateRunSession(opts.runId, workspace.id, saved);
+      else writeSession(workspace.id, saved);
       if (saved.projectUrl && saved.conversationMode === "project") {
         check("ChatGPT collection saved; future chats will be created from the collection page or reused");
       } else {
@@ -991,8 +1010,16 @@ session
   .command("clear")
   .description("Forget the current ChatGPT chat (Project binding is kept)")
   .option("-w, --workspace <path>")
-  .action((opts: { workspace?: string }) => {
+  .option("--run-id <id>", "use isolated run state instead of workspace preferences")
+  .action((opts: { workspace?: string; runId?: string }) => {
     const workspace = new Workspace(resolveWorkspace(opts.workspace));
+    if (opts.runId) {
+      const run = readRun(opts.runId, workspace.id);
+      updateRunSession(opts.runId, workspace.id, { ...run.session, url: undefined, savedAt: new Date().toISOString() });
+      check("Run chat pointer cleared; workspace preferences unchanged");
+      return;
+    }
+    if (readSharedConnection()) throw new Error("Shared mode requires --run-id to clear an active chat pointer.");
     const result = clearChatPointer(workspace.id);
     if (!result.cleared) say("No ChatGPT session has been saved yet.");
     else if (result.keptProject) check("Current chat cleared; the collection binding has been kept");
@@ -1058,6 +1085,7 @@ program
   .command("record", { hidden: true })
   .description("Record a Codex execution summary (used by the Skill)")
   .option("-w, --workspace <path>")
+  .option("--run-id <id>", "isolated execution run (required in shared mode)")
   .requiredOption("--task <id>")
   .requiredOption("--iteration <n>", "non-negative execution iteration", parseNonNegativeInteger)
   .option("--changed-files <filesOrCount>", "comma-separated files or a count", "0")
@@ -1071,6 +1099,7 @@ program
   .action(
     (opts: {
       workspace?: string;
+      runId?: string;
       task: string;
       iteration: number;
       changedFiles: string;
@@ -1083,6 +1112,8 @@ program
       exitCode?: number;
     }) => {
       const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      if (!opts.runId && readSharedConnection()) throw new Error("Shared mode requires --run-id. Create it with c2c run create.");
+      if (opts.runId) readRun(opts.runId, workspace.id);
       const changed = parseChangedFiles(opts.changedFiles);
       let outputId: number | undefined;
       let outputAvailable = false;
@@ -1092,6 +1123,7 @@ program
           : opts.output;
       if (opts.command && rawOutput !== undefined) {
         const savedOutput = saveExecutionOutput(workspace.id, {
+          runId: opts.runId,
           command: opts.command,
           raw: rawOutput,
           exitCode: opts.exitCode ?? null,
@@ -1102,6 +1134,7 @@ program
         outputAvailable = savedOutput.allowed;
       }
       appendExecutionRecord(workspace.id, {
+        runId: opts.runId,
         taskId: opts.task,
         iteration: opts.iteration,
         changedFiles: changed,
@@ -1128,7 +1161,7 @@ tunnelCmd
   .option("--json", "machine-readable output", false)
   .action((opts: { workspace?: string; zone?: string; json: boolean }) => {
     try {
-      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const workspace = connectionForWorkspace(resolveWorkspace(opts.workspace));
       const payload = tunnelChoicePayload(workspace, opts.zone);
       if (opts.json) {
         say(JSON.stringify(payload));
@@ -1153,7 +1186,7 @@ tunnelCmd
   .action(async (opts: { mode: string; workspace?: string; zone?: string; hostname?: string; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
     try {
-      const workspace = new Workspace(root);
+      const workspace = connectionForWorkspace(root);
       const mode = opts.mode.trim().toLowerCase();
       const previous = readTunnelState(workspace.id);
       if (mode === "quick") {
@@ -1245,6 +1278,8 @@ function handleCliError(error: unknown, json: boolean): void {
   }
   process.exitCode = 1;
 }
+
+registerSharedCommands(program);
 
 program.parseAsync(process.argv).catch((error: Error) => {
   cross(error.message);

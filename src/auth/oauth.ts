@@ -10,6 +10,7 @@ export interface OAuthDeps {
   store: AuthStore;
   pairing: PairingManager;
   workspaceName: string;
+  allowedRoots?: readonly string[];
   getBaseUrl: (req: Request) => string;
   logger: Logger;
 }
@@ -22,6 +23,7 @@ interface PendingAuthRequest {
   state?: string;
   codeChallenge: string;
   resource?: string;
+  allowedRoots?: string[];
   expiresAt: number;
 }
 
@@ -68,6 +70,7 @@ function protectedResourceMetadata(base: string): Record<string, unknown> {
 function pairingPage(opts: {
   requestId: string;
   workspaceName: string;
+  allowedRoots?: readonly string[];
   scopes: string[];
   error?: string;
 }): string {
@@ -120,6 +123,7 @@ function pairingPage(opts: {
 <div class="card">
   <h1>${escapedProductName}</h1>
   <p class="sub">ChatGPT is requesting access to workspace <strong>${escapedWorkspaceName}</strong> (read-only):</p>
+  ${opts.allowedRoots ? `<p>Approved local roots (including subdirectories):</p><ul>${opts.allowedRoots.map((root) => `<li>${escapeHtml(root)}</li>`).join("")}</ul>` : ""}
   <ul>${scopeList}</ul>
   <form method="POST" action="authorize">
     <input type="hidden" name="request_id" value="${escapedRequestId}">
@@ -221,7 +225,13 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       fail("invalid_request", "PKCE with S256 is required");
       return;
     }
+    const resource = `${deps.getBaseUrl(req)}/mcp`;
+    if (query.resource !== undefined && query.resource !== resource) {
+      fail("invalid_target", "resource must identify this MCP endpoint");
+      return;
+    }
     const scopes = filterScopes(query.scope);
+    if (scopes.length === 0) { fail("invalid_scope", "No supported scopes were requested"); return; }
     const request: PendingAuthRequest = {
       id: randomBytes(16).toString("hex"),
       clientId: client.clientId,
@@ -229,7 +239,8 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       scopes,
       state: query.state,
       codeChallenge: query.code_challenge,
-      resource: query.resource,
+      resource,
+      allowedRoots: deps.allowedRoots ? [...deps.allowedRoots] : undefined,
       expiresAt: Date.now() + 10 * 60_000,
     };
     pendingRequests.set(request.id, request);
@@ -237,7 +248,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
     res
       .status(200)
       .type("html")
-      .send(pairingPage({ requestId: request.id, workspaceName: deps.workspaceName, scopes }));
+      .send(pairingPage({ requestId: request.id, workspaceName: deps.workspaceName, allowedRoots: request.allowedRoots, scopes }));
   });
 
   router.post("/oauth/authorize", urlencoded({ extended: false }), (req, res) => {
@@ -267,6 +278,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
           pairingPage({
             requestId: request.id,
             workspaceName: deps.workspaceName,
+            allowedRoots: request.allowedRoots,
             scopes: request.scopes,
             error: messages[verdict.reason] ?? "Verification failed.",
           })
@@ -281,6 +293,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       scopes: request.scopes,
       pairingSessionId: verdict.sessionId,
       resource: request.resource,
+      allowedRoots: request.allowedRoots,
     });
     deps.logger.info(`Pairing verified; issued authorization code for client ${request.clientId}`);
     const url = new URL(request.redirectUri);
@@ -315,7 +328,11 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
         res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed" });
         return;
       }
-      const tokens = deps.store.issueTokens({ clientId, scopes: record.scopes });
+      if ((body.resource !== undefined && body.resource !== record.resource) || record.resource !== `${deps.getBaseUrl(req)}/mcp`) {
+        res.status(400).json({ error: "invalid_target" });
+        return;
+      }
+      const tokens = deps.store.issueTokens({ clientId, scopes: record.scopes, resource: record.resource, allowedRoots: record.allowedRoots });
       deps.logger.info(`Issued access token for client ${clientId}`);
       res.json({
         access_token: tokens.accessToken,
@@ -333,7 +350,13 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
         res.status(400).json({ error: "invalid_request" });
         return;
       }
-      const result = deps.store.refresh(refreshToken, clientId);
+      const resource = `${deps.getBaseUrl(req)}/mcp`;
+      if (body.resource !== undefined && body.resource !== resource) {
+        res.status(400).json({ error: "invalid_target" });
+        return;
+      }
+      // Old single-workspace grants retain their scope; they never become shared grants.
+      const result = deps.store.refresh(refreshToken, clientId, resource, { allowLegacyResource: !deps.allowedRoots });
       if (!result.ok) {
         res.status(400).json({ error: result.reason });
         return;

@@ -1,0 +1,25 @@
+name: Validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install ripgrep for both search-engine test suites
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - run: npm install --ignore-scripts --no-package-lock
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

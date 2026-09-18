@@ -29,6 +29,7 @@ export interface AuthorizationCodeRecord {
   workspaceId: string;
   pairingSessionId: string;
   resource?: string;
+  allowedRoots?: string[];
   expiresAt: number;
 }
 
@@ -38,6 +39,8 @@ export interface TokenRecord {
   clientId: string;
   workspaceId: string;
   scopes: string[];
+  resource?: string;
+  allowedRoots?: string[];
   issuedAt: number;
   expiresAt: number;
   revoked: boolean;
@@ -137,6 +140,7 @@ export class AuthStore {
     scopes: string[];
     pairingSessionId: string;
     resource?: string;
+    allowedRoots?: string[];
   }): string {
     const code = newToken("c2c_ac");
     this.authCodes.set(code, {
@@ -148,6 +152,7 @@ export class AuthStore {
       workspaceId: this.workspaceId,
       pairingSessionId: input.pairingSessionId,
       resource: input.resource,
+      allowedRoots: input.allowedRoots ? [...input.allowedRoots] : undefined,
       expiresAt: Date.now() + AUTH_CODE_TTL_MS,
     });
     return code;
@@ -169,6 +174,8 @@ export class AuthStore {
     scopes: string[];
     workspaceId?: string;
     accessTtlMs?: number;
+    resource?: string;
+    allowedRoots?: string[];
   }): { accessToken: string; refreshToken: string | null; expiresIn: number; scopes: string[] } {
     const now = Date.now();
     const workspaceId = input.workspaceId ?? this.workspaceId;
@@ -181,6 +188,8 @@ export class AuthStore {
       clientId: input.clientId,
       workspaceId,
       scopes: input.scopes,
+      resource: input.resource,
+      allowedRoots: input.allowedRoots ? [...input.allowedRoots] : undefined,
       issuedAt: now,
       expiresAt: now + accessTtl,
       revoked: false,
@@ -195,6 +204,8 @@ export class AuthStore {
         clientId: input.clientId,
         workspaceId,
         scopes: input.scopes,
+        resource: input.resource,
+        allowedRoots: input.allowedRoots ? [...input.allowedRoots] : undefined,
         issuedAt: now,
         expiresAt: now + REFRESH_TOKEN_TTL_MS,
         revoked: false,
@@ -221,19 +232,26 @@ export class AuthStore {
   /** Refresh-token rotation: old refresh token is revoked, a new pair is issued. */
   refresh(
     refreshToken: string,
-    clientId: string
+    clientId: string,
+    resource?: string,
+    opts: { allowLegacyResource?: boolean } = {}
   ): { ok: true; tokens: ReturnType<AuthStore["issueTokens"]> } | { ok: false; reason: string } {
     const record = this.tokens.get(sha256hex(refreshToken));
     if (!record || record.kind !== "refresh") return { ok: false, reason: "invalid_grant" };
     if (record.revoked) return { ok: false, reason: "invalid_grant" };
     if (Date.now() > record.expiresAt) return { ok: false, reason: "invalid_grant" };
     if (record.clientId !== clientId) return { ok: false, reason: "invalid_client" };
+    if (resource !== undefined && resource !== record.resource && !(opts.allowLegacyResource && record.resource === undefined)) {
+      return { ok: false, reason: "invalid_target" };
+    }
     record.revoked = true;
     this.tokens.delete(record.hash);
     const tokens = this.issueTokens({
       clientId,
       scopes: record.scopes,
       workspaceId: record.workspaceId,
+      resource: record.resource,
+      allowedRoots: record.allowedRoots,
     });
     return { ok: true, tokens };
   }
@@ -274,5 +292,5 @@ export function filterScopes(requested: string | undefined): string[] {
   if (!requested || requested.trim() === "") return [...SUPPORTED_SCOPES];
   const asked = requested.split(/[\s+]+/).filter(Boolean);
   const granted = asked.filter((scope) => (SUPPORTED_SCOPES as readonly string[]).includes(scope));
-  return granted.length > 0 ? granted : [...SUPPORTED_SCOPES];
+  return granted;
 }

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { SHARED_CONNECTION_ID } from "./connection.js";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "./paths.js";
 
 export const CHATGPT_DEVELOPER_MODE_URL = "https://chatgpt.com/#settings/Security";
@@ -71,6 +72,7 @@ export function connectorNameFor(opts: {
   hadEndpointBefore: boolean;
 }): string {
   if (opts.previousName?.trim()) return opts.previousName.trim();
+  if (opts.workspaceId === SHARED_CONNECTION_ID) return `${DEFAULT_CONNECTOR_NAME} · Shared`;
   if (opts.hadEndpointBefore) return DEFAULT_CONNECTOR_NAME;
   return `${DEFAULT_CONNECTOR_NAME} · ${sanitizeConnectorLabel(opts.workspaceName, opts.workspaceId)}`;
 }
