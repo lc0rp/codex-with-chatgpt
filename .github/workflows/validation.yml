@@ -23,6 +23,7 @@ jobs:
           import base64, gzip, hashlib, pathlib
           parts = sorted(pathlib.Path('.github').glob('dynamic-patch.*.b64'))
           encoded = ''.join(p.read_text().strip() for p in parts)
+          encoded = encoded.replace('m11erTTjioEj6', 'm11erTTjoEj6')
           patch = gzip.decompress(base64.b64decode(encoded, validate=True))
           assert hashlib.sha256(patch).hexdigest() == '6cd736fbeb86cdc93cd277d963f8bd9700492f00ed487e2ae19fb2b91f9ca101'
           pathlib.Path('/tmp/dynamic-projects.patch').write_bytes(patch)
