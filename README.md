@@ -1,65 +1,31 @@
 # Codex with ChatGPT
 
 > ChatGPT thinks. Codex works.
-> ChatGPT 负责思考，Codex 负责干活。
 
 > [!IMPORTANT]
-> **遇到问题？** 请先向 Codex 发送 **「更新 Codex with ChatGPT」** 并重试。更新到最新版本可以解决大多数已知问题。  
 > **Having trouble?** First ask Codex to **“Update Codex with ChatGPT”** and try again. Updating to the latest version resolves most known issues.
 
-## The problem · 解决什么问题
+## The problem
 
-**中文** — ChatGPT 付费订阅的网页版额度大量闲置，Codex 却在消耗紧张的
-API 额度做规划和 Review。本项目把"思考"交给你已付费的网页版 ChatGPT，
-Codex 只负责执行。不用 API Key、不搞逆向代理——官方网页 + 只读 MCP 桥接。
-
-**EN** — ChatGPT Plus/Pro web quota sits idle while your coding agent burns
+ChatGPT Plus/Pro web quota sits idle while your coding agent burns
 scarce API/Codex tokens on planning and review. This project moves the
 thinking to the subscription you already pay for; Codex only executes.
 No API keys, no reverse proxy — official web UI plus a read-only MCP bridge.
 
-## What it is · 这是什么
+## What it is
 
-**中文** — 把 ChatGPT 网页版变成 Codex 编码会话的"规划与审查大脑"，执行权
-完全保留在 Codex 手里。你的仓库永远不会被上传：ChatGPT 通过一条安全的、
-OAuth 保护的**只读** MCP 连接，按需读取当前工作区里它真正需要的那几行代码。
-
-**EN** — Use the ChatGPT web app as the planning and review brain for your
+Use the ChatGPT web app as the planning and review brain for your
 Codex coding sessions, while Codex keeps full ownership of execution. Your
 repository is never uploaded: ChatGPT reads exactly the lines it needs through
 a secure, OAuth-protected, **read-only** MCP connection to your current
 workspace.
 
-Detailed docs below are in English · 详细中文文档见 **[README.zh-CN.md](README.zh-CN.md)**
+The detailed documentation below is in English. For the full Chinese documentation,
+see **[README.zh-CN.md](README.zh-CN.md)**.
 
-## One-paste install · 一段话安装
+## One-paste install
 
-**中文** — 不懂 git、Node、终端？完全不需要懂。把下面这段话原样复制给你的
-编码 Agent（Codex），然后去倒杯咖啡：
-
-```text
-请帮我完整安装并配置 Codex with ChatGPT，全程自动，我是不懂技术的小白，
-所有事情你自己做：
-
-1. 环境自检：需要 git 和 Node.js ≥ 20，缺什么就自动安装
-  （macOS 用 Homebrew，Windows 用 winget），同时安装 cloudflared。
-2. 下载：把 https://github.com/XiaoDuoYa/codex-with-chatgpt 克隆到
-   ~/codex-with-chatgpt（已存在就 git pull 更新）。
-3. 构建：在该目录里执行 corepack pnpm install 和 corepack pnpm build。
-4. 安装 Skill：把仓库里的 skill/SKILL.md 复制到
-   ~/.codex/skills/codex-with-chatgpt/SKILL.md，并把文件中
-   "The codex-with-chatgpt checkout lives at:" 那一行的路径改成实际克隆路径。
-5. 首次配置：按 SKILL.md 里的 first-time setup 流程执行
-  （运行 c2c setup，用内置浏览器打开 ChatGPT 配置连接器并输入配对码）。
-   全程只用内置浏览器，禁止打开任何第三方浏览器。
-6. 只有遇到需要我登录（ChatGPT / Cloudflare）、验证码或两步验证时才叫我，
-   而且一次只告诉我一个动作。
-7. 完成后给我看 ✓ 清单，并确认文件读取测试通过。我不懂 MCP、OAuth、
-   Tunnel、端口这些词，不要向我解释；出了问题先自己修。
-```
-
-
-**EN** — Don't know git, Node, or terminals? You don't need to. Copy the
+Don't know git, Node, or terminals? You don't need to. Copy the
 paragraph below, paste it to your coding agent (Codex), and go grab a coffee:
 
 ```text
@@ -86,20 +52,19 @@ I am a non-technical user — do everything yourself:
 ```
 
 
-**Updates · 更新** — The Skill checks GitHub once a day and updates itself when a
-new version is released; no action needed. You can also say "更新 Codex with ChatGPT"
-anytime. / Skill 每天自动检查一次 GitHub，有新版本会自动更新，无需任何操作；
-也可以随时对 Codex 说"更新 Codex with ChatGPT"。
+**Updates**: The Skill checks GitHub once a day and updates itself when a
+new version is released; no action needed. You can also tell Codex
+"Update Codex with ChatGPT" anytime.
 
 ---
 
-*The sections below are in English. 以下详细内容为英文，中文完整版见
-[README.zh-CN.md](README.zh-CN.md)。*
+*The sections below are in English. For the complete Chinese version, see
+[README.zh-CN.md](README.zh-CN.md).*
 
 ## Install → Setup → Use (manual)
 
 1. Install the Codex Skill: copy `skill/` to `~/.codex/skills/codex-with-chatgpt/`.
-2. Tell Codex: **"Set up Codex with ChatGPT."** (中文: "使用 Codex with ChatGPT 完成首次配置。")
+2. Tell Codex: **"Set up Codex with ChatGPT."**
 3. Use Codex normally: **"Use Codex with ChatGPT to implement XXX."**
 
 That's the whole manual. You don't need to know what MCP, OAuth, tunnels,
