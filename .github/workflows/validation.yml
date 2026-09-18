@@ -23,7 +23,7 @@ jobs:
       - run: npm run build
       - name: Package validation workspace
         if: always()
-        run: tar --exclude=.git --exclude=dist -czf /tmp/validation-workspace.tar.gz .
+        run: tar --exclude=./.git --exclude=./dist -czf /tmp/validation-workspace.tar.gz .
       - uses: actions/upload-artifact@v4
         if: always()
         with:
