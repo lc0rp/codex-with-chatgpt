@@ -35,7 +35,7 @@ I am a non-technical user — do everything yourself:
 1. Check the environment: git and Node.js >= 20 must be available. Install
    anything missing yourself (macOS: Homebrew, Windows: winget). Also install
    cloudflared.
-2. Download: clone https://github.com/XiaoDuoYa/codex-with-chatgpt into
+2. Download: clone https://github.com/lc0rp/codex-with-chatgpt into
    ~/codex-with-chatgpt (if it already exists, git pull to update).
 3. Build: inside that folder run `corepack pnpm install` then `corepack pnpm build`.
 4. Install the Skill: copy skill/SKILL.md to
