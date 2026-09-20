@@ -39,7 +39,7 @@ I am a non-technical user — do everything yourself:
    ~/codex-with-chatgpt (if it already exists, git pull to update).
 3. Build: inside that folder run `corepack pnpm install` then `corepack pnpm build`.
 4. Install the Skill: copy skill/SKILL.md to
-   ~/.codex/skills/codex-with-chatgpt/SKILL.md, and update the line
+   ~/dev/luke-agent-scripts/skills/codex-with-chatgpt/SKILL.md, and update the line
    "The codex-with-chatgpt checkout lives at:" to the actual clone path.
 5. First-time setup: follow the SKILL.md "first-time setup" workflow
    (run c2c setup, configure the ChatGPT connector in the BUILT-IN browser,
@@ -63,7 +63,7 @@ new version is released; no action needed. You can also tell Codex
 
 ## Install → Setup → Use (manual)
 
-1. Install the Codex Skill: copy `skill/` to `~/.codex/skills/codex-with-chatgpt/`.
+1. Install the Codex Skill: copy `skill/` to `~/dev/luke-agent-scripts/skills/codex-with-chatgpt/`.
 2. Tell Codex: **"Set up Codex with ChatGPT."**
 3. Use Codex normally: **"Use Codex with ChatGPT to implement XXX."**
 
